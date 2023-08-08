@@ -59,6 +59,7 @@ def predict(form: Form):
 
 def intro():
     print('Final work on the course "Introduction to Data Science"')
+    print('To start application use command: "uvicorn main:app --reload"')
 
 
 if __name__ == '__main__':

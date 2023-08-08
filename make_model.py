@@ -12,13 +12,22 @@ from scipy import stats
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, confusion_matrix
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score, train_test_split
 
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler, MinMaxScaler
 from sklearn.compose import ColumnTransformer, make_column_selector
 from sklearn.preprocessing import FunctionTransformer
+from sklearn.svm import SVC
+
+TARGET_ACTION_LIST = ['sub_car_claim_click', 'sub_car_claim_submit_click', 'sub_open_dialog_click',
+                      'sub_custom_question_submit_click', 'sub_call_number_click', 'sub_callback_submit_click',
+                      'sub_submit_success', 'sub_car_request_submit_click']
+
+FEATURE_LIST = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_adcontent', 'utm_keyword',
+                'device_category', 'device_os', 'device_brand', 'device_model', 'device_screen_resolution',
+                'device_browser', 'geo_country', 'geo_city']
 
 
 def filter_data(df):
@@ -61,6 +70,7 @@ def get_increase_dic(df):
     return increase_dic
 
 
+# Функция для объединения редких категорий в одну
 def category_increase_by_bound(df, column_value_count_dic):
     df_out = df.copy()
     bound = 30
@@ -71,6 +81,7 @@ def category_increase_by_bound(df, column_value_count_dic):
     return df_out
 
 
+# Целевая обработка по каналу и типу привлечения
 def utm_main_convertor(df):
     SOURCE_TUPLE = ('QxAxdyPLuQMEcrdZWdWb', 'MvfHsxITijuriZxsqZqt', 'ISrKoXQCxqqYvAZICvjs', 'IZEXUFLARCUMynmHNBGo',
                     'PlbkrSYoHuZBWfYjYnfw', 'gVRrcxiDQubJiljoTbGm')
@@ -81,6 +92,7 @@ def utm_main_convertor(df):
     return df_out
 
 
+# Объединение браузера с содержанием названия Instagram
 def browser_insta_group(df):
     df_out = df.drop(columns=['device_browser']).copy()
     df_out['device_browser'] = df.device_browser.apply(
@@ -88,55 +100,50 @@ def browser_insta_group(df):
     return df_out
 
 
-def output_df_to_compare(data):
-    print(type(data))
-    # np.savetxt("test_out.csv", data.toarray(), delimiter=",")
-    # data.toarray().to_csv('test_out.csv')
-    # data.to_csv('test_out.csv')
-    return data
+# Загрузка данных и подготовка к обучению
+def collect_data():
+    # Загрузка данных по сессиям
+    with open('data/ga_sessions.pkl', 'rb') as file:
+        sessions = pickle.load(file)
+
+    # Загрузка данных по действиям
+    with open('data/ga_hits.pkl', 'rb') as file:
+        ga_hits = pickle.load(file)
+
+    # Вытаскиваем целевые данные
+    ga_hits['target'] = ga_hits['event_action'].apply(lambda x: x in TARGET_ACTION_LIST)
+    ga_hits = ga_hits.groupby(['session_id']).agg({'target': 'max'})
+
+    sessions = sessions.merge(ga_hits, on='session_id', how='inner')
+
+    sessions['target'] = sessions['target'].apply(lambda x: int(x))
+
+    # Формируем таблицу для работы
+    use_list = FEATURE_LIST.copy()
+    use_list.append('target')
+    sessions = sessions[use_list].drop_duplicates()
+    return sessions
 
 
 def main():
-    import pandas as pd
-    # import numpy as np
+    # import pandas as pd
 
     RS = 42
 
     print('User Action Prediction Pipeline')
 
-    # # Загрузка данных по сессиям
-    # with open('data/ga_sessions.pkl', 'rb') as file:
-    #     sessions = pickle.load(file)
-    #
-    # # Загрузка данных по действиям
-    # with open('data/ga_hits.pkl', 'rb') as file:
-    #     ga_hits = pickle.load(file)
-    #
-    # ga_hits['target'] = ga_hits['event_action'].apply(lambda x: x in TARGET_ACTION_LIST)
-    # ga_hits = ga_hits.groupby(['session_id']).agg({'target': 'max'})
-    #
-    # # sessions = sessions.join(ga_hits, on='session_id', how='inner')
-    # sessions = sessions.merge(ga_hits, on='session_id', how='inner')
-    #
-    # sessions['target'] = sessions['target'].apply(lambda x: int(x))
-    #
-    # use_list = FEATURE_LIST.copy()
-    # use_list.append('target')
-    #
-    # # sessions = sessions[use_list].unique()
-    # sessions = sessions[use_list].drop_duplicates()
-    #
     # sessions.to_csv('prepared_sessions.csv')
+    # sessions = pd.read_csv('prepared_sessions.csv', index_col=0)
 
-    sessions = pd.read_csv('prepared_sessions.csv', index_col=0)
+    sessions = collect_data()
 
     increase_dic = get_increase_dic(sessions)
     conv_dic = get_decrease_unconv_dic(sessions)
-    # print(increase_dic)
 
     X = sessions.drop('target', axis=1)
     y = sessions['target']
-    print(y.value_counts())
+
+    x_tr, x_test, y_tr, y_test = train_test_split(X, y, random_state=RS)
 
     print('Start models fitting')
 
@@ -165,19 +172,11 @@ def main():
         ('categorical', categorical_transformer, make_column_selector(dtype_include=object))
     ])
 
-    # outputer = Pipeline(steps=[
-    #     ('out_df', FunctionTransformer(output_df_to_compare))
-    # ])
-
     models = (
         LogisticRegression(class_weight='balanced', random_state=RS),
-        # RandomForestClassifier(class_weight='balanced', random_state=RS)
-        # SVC()
-
+        RandomForestClassifier(class_weight='balanced', random_state=RS),
+        SVC(class_weight='balanced', random_state=RS, verbose=100)
     )
-
-    model = LogisticRegression(class_weight='balanced', random_state=RS)
-
 
     best_score = .0
     best_pipe = None
@@ -187,34 +186,23 @@ def main():
             ('preprocessor', preprocessor),
             ('classifier', model)
         ])
-        score = cross_val_score(pipe, X, y, cv=4, scoring='roc_auc', verbose=100)
-        # print(f'model: {type(model).__name__}, roc_auc_score: {score:.4f}')
-        print(f'model: {0}, roc_auc_score: {score.mean():.4f}')
+        score = cross_val_score(pipe, x_tr, y_tr, cv=4, scoring='roc_auc', verbose=100)
+        print(f'model: {type(model).__name__}, roc_auc_score: {score.mean():.4f}')
+        # print(f'model: {0}, roc_auc_score: {score.mean():.4f}')
 
         if score.mean() > best_score:
             best_score = score.mean()
             best_pipe = pipe
 
+    best_pipe.fit(x_tr, y_tr)
+    prediction = best_pipe.predict(x_test)
+    score = roc_auc_score(y_test, prediction)
+    print(f'best model test: {type(best_pipe.named_steps["classifier"]).__name__}, roc_auc_score: {score:.4f}')
+
     best_pipe.fit(X, y)
+    print(f'best model: {type(best_pipe.named_steps["classifier"]).__name__}, roc_auc_score: {best_score:.4f}')
 
-    # pipe = Pipeline(steps=[
-    #     ('preporator', prepare_transformer),
-    #     ('preprocessor', preprocessor),
-    #     # ('outer', outputer),
-    #     ('classifier', model)
-    # ])
-    # pipe.fit(X, y)
-
-    X = sessions  # .drop('target', axis=1)
-    y = sessions['target']
-
-    # prediction = pipe.predict(X)
-    prediction = best_pipe.predict(X)
-    best_score = roc_auc_score(y, prediction)
-
-    # print(f'best model: {type(best_pipe.named_steps["classifier"]).__name__}, roc_auc_score: {best_score:.4f}')
-    print(f'best model: {0}, roc_auc_score: {best_score:.4f}')
-    print(confusion_matrix(y, prediction))
+    # print(confusion_matrix(y, prediction))
 
     with open('sber_user_action_pipe.dill', 'wb') as file:
         dill.dump({
@@ -224,7 +212,7 @@ def main():
                 "author": "F Salih",
                 "version": 1,
                 "date": datetime.datetime.now(),
-                # "type": type(best_pipe.named_steps["classifier"]).__name__,
+                "type": type(best_pipe.named_steps["classifier"]).__name__,
                 "roc_auc_score": best_score
             }
         }, file)
